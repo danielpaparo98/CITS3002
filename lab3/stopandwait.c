@@ -51,6 +51,7 @@ int		frameexpected		= 0;
 int     previousseq         = 0;
 
 
+
 void transmit_frame(MSG *msg, FRAMEKIND kind, size_t length, int seqno, int ack)
 {
     FRAME       f;
@@ -64,13 +65,13 @@ void transmit_frame(MSG *msg, FRAMEKIND kind, size_t length, int seqno, int ack)
 
     switch (kind) {
     case DL_ACK :
-        printf("ACK transmitted, seq=%d\n", seqno);
+        printf("ACK transmitted, seq=%d, ack=%d\n", seqno, previousseq);
 	break;
 
     case DL_DATA: {
 	CnetTime	timeout;
 
-        printf(" DATA transmitted, seq=%d\n", seqno);
+        printf(" DATA transmitted, seq=%d, ack=%d\n", seqno, previousseq);
         memcpy(&f.msg, msg, (int)length);
 
 	timeout = FRAME_SIZE(f)*((CnetTime)8000000 / linkinfo[link].bandwidth) +
@@ -93,7 +94,7 @@ EVENT_HANDLER(application_ready)
     CHECK(CNET_read_application(&destaddr, lastmsg, &lastlength));
     CNET_disable_application(ALLNODES);
 
-    printf("down from application, seq=%d\n", nextframetosend);
+    printf("down from application, seq=%d, ack=%d", nextframetosend, previousseq);
     CNET_stop_timer(acktimer);
     transmit_frame(lastmsg, DL_DATA, lastlength, nextframetosend, previousseq);
     nextframetosend = 1-nextframetosend;
@@ -104,7 +105,6 @@ EVENT_HANDLER(physical_ready)
     FRAME       f;
     size_t	    len;
     int         link, checksum;
-    CnetTime    waiter;
     
 
     len         = sizeof(FRAME);
@@ -120,17 +120,18 @@ EVENT_HANDLER(physical_ready)
     switch (f.kind) {
     case DL_ACK :
         if(f.seq == ackexpected) {
-            printf("\t\t\t\tACK received, seq=%d\n", f.seq);
+            printf("\t\t\t\tACK received, seq=%d, ack=%d\n", f.seq, f.ack);
             CNET_stop_timer(lasttimer);
             ackexpected = 1-ackexpected;
             CNET_enable_application(ALLNODES);
         }
+        previousseq = f.seq;
 	break;
 
     case DL_DATA :
-        printf("\t\t\t\tDATA received, seq=%d, ", f.seq);
-        if(f.ack != ackexpected){
-            printf("\t\t\t\tACK received, seq=%d\n", f.seq);
+        printf("\t\t\t\tDATA received, seq=%d, ack=%d\n", f.seq, f.ack);
+        if(f.ack == nextframetosend+1){
+            printf("\t\t\t\tACK1 received, seq=%d, ack=%d\n", f.seq, f.ack);
             CNET_stop_timer(lasttimer);
             ackexpected = 1-ackexpected;
             CNET_enable_application(ALLNODES);
@@ -140,14 +141,12 @@ EVENT_HANDLER(physical_ready)
             len = f.len;
             CHECK(CNET_write_application(&f.msg, &len));
             frameexpected = 1-frameexpected;
-            previousseq = f.seq;
         }
         else
             printf("ignored\n");
+        
         previousseq = f.seq;
-
-        waiter = 10000;
-        acktimer = CNET_start_timer(EV_TIMER2, waiter, 0);
+        acktimer = CNET_start_timer(EV_TIMER2, (CnetTime)80000, 0);
 
         CNET_enable_application(ALLNODES);
 
@@ -155,7 +154,7 @@ EVENT_HANDLER(physical_ready)
     }
 }
 
-EVENT_HANDLER(test)
+EVENT_HANDLER(acktimeout)
 {
     printf("Ackframe will need to be sent, seq=%d\n", ackexpected);
     transmit_frame(NULL, DL_ACK, 0, previousseq, previousseq);
@@ -186,6 +185,7 @@ EVENT_HANDLER(reboot_node)
 
     CHECK(CNET_set_handler( EV_APPLICATIONREADY, application_ready, 0));
     CHECK(CNET_set_handler( EV_PHYSICALREADY,    physical_ready, 0));
+    CHECK(CNET_set_handler( EV_TIMER2,           acktimeout, 0));
     CHECK(CNET_set_handler( EV_TIMER1,           timeouts, 0));
     CHECK(CNET_set_handler( EV_DEBUG0,           showstate, 0));
 
